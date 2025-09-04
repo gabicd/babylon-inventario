@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import QrScanner from 'qr-scanner';
 import * as BABYLON from '@babylonjs/core';
 import '@babylonjs/loaders';
 import './App.css'
@@ -9,8 +10,14 @@ function App() {
   const reactScene = useRef(null)
   const inventoryCanvas = useRef(null);
   const inventoryEngine = useRef(null);
-  //const initialScale = useRef(null)
-  //const animationDuration = useRef(null)
+  const videoRef = useRef(null); // For the <video> element
+  const qrScannerRef = useRef(null); // To hold the qr-scanner instance
+  const videoStreamRef = useRef(null); // To hold the MediaStream object
+  const originalBoxMaterialRef = useRef(null); // To restore the box material after scanning`
+
+  const [isScannerActive, setIsScannerActive] = useState(false);
+  const [scannedData, setScannedData] = useState(null);
+
   
   const [isInventoryOpen, setIsInventoryOpen] = useState(false)
   const [selectedItem, setSelectedItem] = useState(null);
@@ -70,7 +77,7 @@ function App() {
   }
 
   const inventoryItems = [
-    { id: 1, name: 'Camera', description: 'Utilize para scanear os QR Codes espalhados!', assetUrl: './assets/iphoneX.gltf'},
+    { id: 1, name: 'Camera', description: 'Utilize para scanear os QR Codes espalhados!', assetUrl: './assets/iphoneX.gltf', function: 'scan' },
     { id: 2, name: 'Card Box', description: 'Guarda sua coleção de cartas', assetUrl: './assets/box.gltf'},
     { id: 3, name: 'Joia', description: 'Item especial da caça ao tesouro', assetUrl: './assets/jewel.glb'},
   ];
@@ -95,20 +102,123 @@ function App() {
     setIsInventoryOpen(true);
   }  
 
+  // This function now triggers the scanner
+  function useCamera(){
+    setSelectedItem(null); // Closes the inventory item view
+    setIsScannerActive(true); // Triggers the useEffect to start the scanner
+    setScannedData(null); // Clear previous scan results
+  }
+
+  // Effect to manage the scanner lifecycle (now using qr-scanner library)
+  useEffect(() => {
+    const startScanner = async () => {
+      const scene = reactScene.current;
+      const video = videoRef.current;
+      if (!scene || !video) {
+        console.error("Scene or video element not ready.");
+        setIsScannerActive(false);
+        return;
+      }
+      if (typeof QrScanner === 'undefined') {
+        console.error("QrScanner library is not loaded.");
+        alert("Error: QR Scanner library not found.");
+        setIsScannerActive(false);
+        return;
+      }
+
+      const box = scene.getMeshByName("box");
+      if (!box) {
+        console.error("Box mesh not found.");
+        setIsScannerActive(false);
+        return;
+      }
+      
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        videoStreamRef.current = stream;
+        video.srcObject = stream;
+        video.play();
+
+        await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+        
+        // Save the original material to restore it later
+        originalBoxMaterialRef.current = box.material;
+
+        // Create a new material with the video feed as its texture
+        const videoTexture = new BABYLON.VideoTexture("videoTex", video, scene, true, true);
+        const videoMat = new BABYLON.StandardMaterial("videoMat", scene);
+        videoMat.diffuseTexture = videoTexture;
+        videoMat.emissiveColor = new BABYLON.Color3(1, 1, 1); // Make texture bright
+        box.material = videoMat;
+
+        // ---- NEW SCANNER LOGIC ----
+        qrScannerRef.current = new QrScanner(
+          video,
+          result => {
+            console.log("QR Code Found:", result.data);
+            setScannedData(result.data);
+            setIsScannerActive(false); // Stop scanning on success
+          },
+          { 
+            highlightScanRegion: true,
+            highlightCodeOutline: true,
+           },
+        );
+        await qrScannerRef.current.start();
+        // -------------------------
+
+      } catch (err) {
+        console.error("Camera access error or scanner failed to start:", err);
+        setIsScannerActive(false);
+      }
+    };
+
+    const stopScanner = () => {
+      // Stop the qr-scanner instance
+      if (qrScannerRef.current) {
+        qrScannerRef.current.destroy();
+        qrScannerRef.current = null;
+      }
+      // Stop the camera stream
+      if (videoStreamRef.current) {
+        videoStreamRef.current.getTracks().forEach(track => track.stop());
+        videoStreamRef.current = null;
+      }
+      // Restore the box's original material
+      const scene = reactScene.current;
+      if (scene && originalBoxMaterialRef.current) {
+        const box = scene.getMeshByName("box");
+        if (box) {
+          box.material = originalBoxMaterialRef.current;
+        }
+      }
+    };
+
+    if (isScannerActive) {
+      startScanner();
+    } else {
+      stopScanner();
+    }
+
+    // Cleanup function to ensure scanner stops when component unmounts
+    return () => {
+      stopScanner();
+    };
+  }, [isScannerActive]);
+
+
   useEffect(() => {
     const setupInventoryScene = async () => {
       if (selectedItem && inventoryCanvas.current && selectedItem.assetUrl) {
         inventoryEngine.current = new BABYLON.Engine(inventoryCanvas.current, true, { antialias: true });
         const scene = new BABYLON.Scene(inventoryEngine.current);
-        scene.clearColor = new BABYLON.Color4(0, 0, 0, 0); // Transparent background
+        scene.clearColor = new BABYLON.Color4(0, 0, 0, 0); 
 
         const camera = new BABYLON.ArcRotateCamera("inventory_camera", Math.PI / 2, Math.PI / 2.5, 10, BABYLON.Vector3.Zero(), scene);
-        camera.attachControl(inventoryCanvas.current, true); // 'false' prevents default user input
+        camera.attachControl(inventoryCanvas.current, true);
         camera.wheelPrecision = 45;
         //camera.lowerRadiusLimit = 0.5 ;
         //camera.upperRadiusLimit = 20;
-
-        //camera.wheelPrecision = 100; // Slow down zoom
         
         const light = new BABYLON.HemisphericLight("inventory_light", new BABYLON.Vector3(0, 1, 0), scene);
         light.intensity = 1.2;
@@ -163,6 +273,7 @@ function App() {
           console.error("Failed to load asset: ", error)
         }
 
+
         inventoryEngine.current.runRenderLoop(() => {
             scene.render();
         });
@@ -173,6 +284,7 @@ function App() {
     }
 
     setupInventoryScene()
+    
 
     return () => {
       inventoryEngine.current?.dispose();
@@ -210,9 +322,27 @@ function App() {
                 <div className="inventory-overlay">
                   <button onClick={closeItem} className="close-button">X</button>
                   <canvas ref={inventoryCanvas} id="inventory-canvas"></canvas>
-
+                {selectedItem.function &&(
+                  <button onClick={useCamera}>use camera</button>
+                )}
                 </div>
-              )}    
+              )}  
+
+        {isScannerActive && (
+          <div className="scanner-overlay">
+            <video ref={videoRef} id="scanner-video" playsInline autoPlay muted></video>
+            {/* The qr-scanner library adds its own canvas overlay, so we don't need a custom one */}
+            <button onClick={() => setIsScannerActive(false)} className="close-scanner-button">X</button>
+          </div>
+        )}     
+
+                {scannedData && (
+          <div className="scanner-overlay result-panel">
+            <h3>QR Code Scanned!</h3>
+            <p>{scannedData}</p>
+            <button onClick={() => setScannedData(null)}>Close</button>
+          </div>
+        )}
       </div>
     </>
   )

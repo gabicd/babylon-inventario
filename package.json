@@ -12,6 +12,7 @@
   "dependencies": {
     "@babylonjs/core": "^8.25.1",
     "@babylonjs/loaders": "^8.25.1",
+    "qr-scanner": "^1.4.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
